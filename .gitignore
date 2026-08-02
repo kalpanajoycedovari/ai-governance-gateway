@@ -1,0 +1,35 @@
+﻿# secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+*.egg-info/
+
+# node
+node_modules/
+npm-debug.log*
+
+# datahub / qdrant / docker volumes
+.datahub/
+qdrant_storage/
+*_storage/
+volumes/
+
+# generated reports & logs
+reports/
+*.log
+audit_log*.json*
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

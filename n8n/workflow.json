@@ -1,0 +1,178 @@
+{
+  "name": "Agent Governance Layer",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-40, 300],
+      "id": "trig01",
+      "name": "Run once"
+    },
+    {
+      "parameters": {
+        "jsCode": "const trace = {\n  trace_id: \"t-002\",\n  timestamp: \"2026-07-22T10:02:00Z\",\n  agent_name: \"loan-assistant\",\n  user_input: \"Am I approved for the loan?\",\n  agent_output: \"Based on your profile you are declined.\",\n  steps: [],\n  confidence: 0.55,\n  human_reviewed: false,\n  ai_disclosed: false\n};\nreturn [{ json: { trace } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [180, 300],
+      "id": "load01",
+      "name": "Load Sample Trace"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { model: \"llama-3.3-70b-versatile\", temperature: 0.2, messages: [ { role: \"system\", content: \"You classify AI decisions by EU AI Act risk tier. Reply with exactly one word: minimal, limited, high, or unacceptable.\" }, { role: \"user\", content: \"Domain: \" + $json.trace.agent_name + \". User input: \" + $json.trace.user_input + \". Agent output: \" + $json.trace.agent_output } ] } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 300],
+      "id": "risk01",
+      "name": "Risk Classifier",
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_GROQ", "name": "Groq API" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = ($json.choices?.[0]?.message?.content || \"\").toLowerCase();\nconst level = [\"unacceptable\",\"high\",\"limited\",\"minimal\"].find(w => out.includes(w)) || \"limited\";\nreturn [{ json: { risk_level: level, high_risk: level === \"high\" || level === \"unacceptable\" } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [620, 300],
+      "id": "prisk01",
+      "name": "Parse Risk"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/checks",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { trace: $('Load Sample Trace').item.json.trace, high_risk: $('Parse Risk').item.json.high_risk } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 300],
+      "id": "det01",
+      "name": "Deterministic Checks"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { model: \"llama-3.3-70b-versatile\", temperature: 0.2, messages: [ { role: \"system\", content: \"You audit AI outputs for bias or discriminatory treatment across protected groups. Reply as one line: VERDICT: pass or flag, then REASON: one sentence.\" }, { role: \"user\", content: \"Output under review: \" + $('Load Sample Trace').item.json.trace.agent_output } ] } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1060, 300],
+      "id": "bias01",
+      "name": "Bias Review",
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_GROQ", "name": "Groq API" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/kb/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { query: ($('Deterministic Checks').item.json.findings || []).filter(f => f.status === \"fail\").map(f => f.check).join(\"; \") || \"general AI Act obligations\", k: 4 } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1280, 300],
+      "id": "comp01",
+      "name": "Compliance Context"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { model: \"llama-3.3-70b-versatile\", temperature: 0.2, messages: [ { role: \"system\", content: \"You are a compliance analyst. Write a short plain-English audit note for a human reviewer to sign off. British English. No em dashes. Factual only.\" }, { role: \"user\", content: \"Risk tier: \" + $('Parse Risk').item.json.risk_level + \". Deterministic checks: \" + JSON.stringify($('Deterministic Checks').item.json.findings) + \". Bias review: \" + ($('Bias Review').item.json.choices?.[0]?.message?.content || \"\") + \". Relevant obligations: \" + ($('Compliance Context').item.json.result || \"\") } ] } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1500, 300],
+      "id": "rep01",
+      "name": "Report Writer",
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_GROQ", "name": "Groq API" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const det = $('Deterministic Checks').item.json.findings || [];\nconst biasContent = $('Bias Review').item.json.choices?.[0]?.message?.content || \"\";\nconst biasStatus = biasContent.toLowerCase().split(\"reason\")[0].includes(\"flag\") ? \"flag\" : \"pass\";\nconst report = $('Report Writer').item.json.choices?.[0]?.message?.content || \"\";\nconst passed = det.every(f => f.status !== \"fail\");\nreturn [{ json: {\n  trace_id: $('Load Sample Trace').item.json.trace.trace_id,\n  risk_level: $('Parse Risk').item.json.risk_level,\n  deterministic: det,\n  bias: { status: biasStatus, detail: biasContent },\n  report,\n  auto_pass: passed && biasStatus === \"pass\"\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1720, 300],
+      "id": "asm01",
+      "name": "Assemble Result"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.auto_pass }}",
+              "rightValue": "",
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1940, 300],
+      "id": "if01",
+      "name": "Auto pass?"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2160, 200],
+      "id": "ok01",
+      "name": "Mark Approved"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2160, 420],
+      "id": "rev01",
+      "name": "Route To Reviewer"
+    }
+  ],
+  "connections": {
+    "Run once": { "main": [[{ "node": "Load Sample Trace", "type": "main", "index": 0 }]] },
+    "Load Sample Trace": { "main": [[{ "node": "Risk Classifier", "type": "main", "index": 0 }]] },
+    "Risk Classifier": { "main": [[{ "node": "Parse Risk", "type": "main", "index": 0 }]] },
+    "Parse Risk": { "main": [[{ "node": "Deterministic Checks", "type": "main", "index": 0 }]] },
+    "Deterministic Checks": { "main": [[{ "node": "Bias Review", "type": "main", "index": 0 }]] },
+    "Bias Review": { "main": [[{ "node": "Compliance Context", "type": "main", "index": 0 }]] },
+    "Compliance Context": { "main": [[{ "node": "Report Writer", "type": "main", "index": 0 }]] },
+    "Report Writer": { "main": [[{ "node": "Assemble Result", "type": "main", "index": 0 }]] },
+    "Assemble Result": { "main": [[{ "node": "Auto pass?", "type": "main", "index": 0 }]] },
+    "Auto pass?": { "main": [[{ "node": "Mark Approved", "type": "main", "index": 0 }], [{ "node": "Route To Reviewer", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

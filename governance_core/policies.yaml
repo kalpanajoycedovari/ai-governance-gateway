@@ -1,0 +1,97 @@
+# Policies as DATA, not prose. Every rule cites its framework, article, version.
+# framework_rank: lower number = higher precedence in a conflict.
+# org_override: true beats everything except another override.
+
+framework_rank:
+  ORG_OVERRIDE: 0
+  EU_AI_ACT: 1
+  GDPR: 2
+  FINANCIAL_CONDUCT: 2
+  INTERNAL: 3
+
+rules:
+  - id: EU-AI-ACT-ART14
+    description: High-risk actions require documented human oversight
+    framework: EU_AI_ACT
+    article: "Article 14"
+    version: "2024/1689"
+    effective: "2026-08-02"
+    when:
+      min_risk: 70
+    effect: require_review
+    priority: 80
+
+  - id: EU-AI-ACT-ART15
+    description: Irreversible high-impact operations must not auto-execute
+    framework: EU_AI_ACT
+    article: "Article 15"
+    version: "2024/1689"
+    effective: "2026-08-02"
+    when:
+      action_type: [delete, purge]
+      reversible: false
+      scope: [bulk, all]
+    effect: deny
+    priority: 90
+
+  - id: GDPR-ART17
+    description: Right to erasure permits deletion of personal data
+    framework: GDPR
+    article: "Article 17"
+    version: "2016/679"
+    effective: "2018-05-25"
+    when:
+      action_type: [delete]
+      data_categories_any: [pii]
+    effect: allow
+    priority: 40
+
+  - id: FIN-RETENTION-7Y
+    description: Financial records must be retained; deletion is refused
+    framework: FINANCIAL_CONDUCT
+    article: "SYSC 9.1"
+    version: "2024.1"
+    effective: "2024-01-01"
+    when:
+      action_type: [delete, purge]
+      data_categories_any: [financial]
+    effect: deny
+    priority: 85
+
+  - id: SEC-CREDENTIALS
+    description: Reading or moving secrets and credentials is blocked
+    framework: INTERNAL
+    article: "SEC-01"
+    version: "2026.1"
+    effective: "2026-01-01"
+    when:
+      data_categories_any: [credentials, secrets]
+      action_type: [read, share, transfer, execute]
+    effect: deny
+    priority: 95
+
+  - id: RBAC-PRIV-ESCALATION
+    description: Low-privilege actors cannot grant access or deploy to prod
+    framework: INTERNAL
+    article: "RBAC-02"
+    version: "2026.1"
+    effective: "2026-01-01"
+    when:
+      action_type: [grant_access, deploy]
+      actor_role: [intern, developer, external_api]
+      environment: [prod]
+    effect: deny
+    priority: 88
+
+  - id: ORG-BREAKGLASS
+    description: Break-glass override lets admins act during declared incidents
+    framework: ORG_OVERRIDE
+    article: "OPS-BREAKGLASS"
+    version: "2026.1"
+    effective: "2026-01-01"
+    org_override: true
+    when:
+      actor_role: [admin]
+    effect: allow
+    priority: 100
+    enabled: false

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Governance Layer — Fleet Registry</title>
+<style>
+  :root {
+    --black: #0c0b09;
+    --panel: #16140f;
+    --panel-2: #1c1a13;
+    --edge: #2a271d;
+    --wire: #35301f;
+    --ink: #efe9dc;
+    --dim: #8a836f;
+    --amber: #d99a2b;
+    --amber-soft: #b98a3f;
+    --amber-dim: rgba(217,154,43,0.12);
+    --mono: "SFMono-Regular", "Consolas", ui-monospace, monospace;
+    --sans: "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--black);
+    color: var(--ink);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 48px 24px 80px;
+    background-image: radial-gradient(circle at 15% -5%, rgba(217,154,43,0.06), transparent 45%);
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--wire);
+    padding-bottom: 20px; margin-bottom: 36px;
+  }
+  .title { display: flex; align-items: baseline; gap: 14px; }
+  .title h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .title .tag {
+    font-size: 13px; font-weight: 400; color: var(--amber-soft);
+    letter-spacing: 0.01em;
+    border-left: 1px solid var(--wire); padding-left: 14px;
+  }
+  .meta { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .meta .live { color: var(--amber); }
+  .meta .dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--amber); margin-right: 6px; vertical-align: middle;
+    animation: pulse 2.4s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .summary {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 1px; background: var(--wire);
+    border: 1px solid var(--wire); border-radius: 8px;
+    overflow: hidden; margin-bottom: 36px;
+  }
+  .stat { background: var(--panel); padding: 20px 22px; }
+  .stat .n { font-family: var(--mono); font-size: 30px; font-weight: 500; line-height: 1; color: var(--ink); }
+  .stat .l { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.1em; margin-top: 10px; }
+  .stat.flag .n { color: var(--amber); }
+  .section-label {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em;
+    color: var(--dim); text-transform: uppercase; margin-bottom: 16px;
+  }
+  .fleet { display: grid; gap: 14px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--edge);
+    border-left: 3px solid var(--wire);
+    border-radius: 8px;
+    padding: 22px 24px;
+    display: grid; grid-template-columns: 1fr auto;
+    gap: 18px 24px; align-items: center;
+    transition: border-color 0.2s, transform 0.15s;
+  }
+  .card:hover { transform: translateY(-1px); border-color: var(--wire); }
+  .card.flag { border-left-color: var(--amber); }
+  .agent-id { display: flex; flex-direction: column; gap: 6px; }
+  .agent-name { font-family: var(--mono); font-size: 17px; font-weight: 500; }
+  .agent-status { font-size: 12px; display: flex; align-items: center; gap: 7px; }
+  .agent-status .pill {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; padding: 2px 7px; border-radius: 3px;
+  }
+  .pill.ok { color: var(--dim); background: var(--panel-2); border: 1px solid var(--wire); }
+  .pill.flag { color: var(--amber); background: var(--amber-dim); }
+  .agent-status .last { color: var(--dim); }
+  .metrics { display: flex; gap: 26px; align-items: center; }
+  .metric { text-align: right; }
+  .metric .v { font-family: var(--mono); font-size: 18px; font-weight: 500; color: var(--ink); }
+  .metric .k { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 4px; }
+  .metric .v.fail { color: var(--amber); }
+  .rate { position: relative; width: 62px; }
+  .rate .track { height: 5px; background: var(--wire); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+  .rate .fill { height: 100%; border-radius: 3px; background: var(--amber); }
+  .empty, .error {
+    text-align: center; padding: 60px 20px;
+    border: 1px dashed var(--wire); border-radius: 8px;
+    color: var(--dim);
+  }
+  .empty h2, .error h2 { font-size: 16px; color: var(--ink); margin-bottom: 8px; font-weight: 500; }
+  .empty p, .error p { font-size: 13px; line-height: 1.6; }
+  .error h2 { color: var(--amber); }
+  code { font-family: var(--mono); color: var(--amber-soft); background: var(--black); padding: 2px 6px; border-radius: 3px; }
+  @media (max-width: 640px) {
+    .summary { grid-template-columns: repeat(2, 1fr); }
+    .card { grid-template-columns: 1fr; }
+    .metrics { justify-content: space-between; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title">
+      <h1>Governance Layer</h1>
+      <span class="tag">Fleet Registry</span>
+    </div>
+    <div class="meta"><span class="dot"></span><span class="live">live</span> · <span id="ts">syncing…</span></div>
+  </header>
+  <div class="summary" id="summary"></div>
+  <div class="section-label">Registered agents · compliance status</div>
+  <div class="fleet" id="fleet"></div>
+</div>
+<script>
+const fmtTime = (iso) => {
+  if (!iso) return "never";
+  const d = new Date(iso);
+  const diff = (Date.now() - d.getTime()) / 60000;
+  if (diff < 1) return "just now";
+  if (diff < 60) return Math.round(diff) + " min ago";
+  if (diff < 1440) return Math.round(diff / 60) + " h ago";
+  return d.toLocaleDateString();
+};
+async function load() {
+  const fleet = document.getElementById("fleet");
+  const summary = document.getElementById("summary");
+  try {
+    const res = await fetch("/registry");
+    const data = await res.json();
+    const agents = data.agents || [];
+    document.getElementById("ts").textContent = new Date().toLocaleTimeString();
+    const totalAgents = agents.length;
+    const totalAudits = agents.reduce((s, a) => s + (a.total_audits || 0), 0);
+    const totalFail = agents.reduce((s, a) => s + (a.failed || 0), 0);
+    const needAttn = agents.filter(a => a.needs_attention).length;
+    summary.innerHTML = `
+      <div class="stat"><div class="n">${totalAgents}</div><div class="l">Agents tracked</div></div>
+      <div class="stat"><div class="n">${totalAudits}</div><div class="l">Decisions audited</div></div>
+      <div class="stat flag"><div class="n">${totalFail}</div><div class="l">Checks failed</div></div>
+      <div class="stat ${needAttn ? 'flag' : ''}"><div class="n">${needAttn}</div><div class="l">Need attention</div></div>
+    `;
+    if (agents.length === 0) {
+      fleet.innerHTML = `<div class="empty"><h2>No agents registered yet</h2>
+        <p>Run the Governance Agent workflow to audit a decision.<br>
+        Each audit registers its agent here automatically.</p></div>`;
+      return;
+    }
+    fleet.innerHTML = agents.map(a => {
+      const flag = a.needs_attention;
+      const rate = a.pass_rate ?? 0;
+      return `
+      <div class="card ${flag ? 'flag' : ''}">
+        <div class="agent-id">
+          <div class="agent-name">${a.agent_name || 'unknown'}</div>
+          <div class="agent-status">
+            <span class="pill ${flag ? 'flag' : 'ok'}">${flag ? 'needs review' : 'clear'}</span>
+            <span class="last">last audit ${fmtTime(a.last_audited)}</span>
+          </div>
+        </div>
+        <div class="metrics">
+          <div class="metric"><div class="v">${a.total_audits}</div><div class="k">Audits</div></div>
+          <div class="metric"><div class="v">${a.passed}</div><div class="k">Passed</div></div>
+          <div class="metric"><div class="v fail">${a.failed}</div><div class="k">Failed</div></div>
+          <div class="rate metric">
+            <div class="v">${rate}%</div><div class="k">Pass rate</div>
+            <div class="track"><div class="fill" style="width:${rate}%"></div></div>
+          </div>
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    fleet.innerHTML = `<div class="error"><h2>Cannot reach the registry</h2>
+      <p>The backend did not respond at <code>/registry</code>.<br>
+      Check that the API is running on port 8010.</p></div>`;
+    document.getElementById("ts").textContent = "offline";
+  }
+}
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>
