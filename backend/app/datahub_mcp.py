@@ -19,6 +19,9 @@ from mcp.client.stdio import stdio_client
 
 log = logging.getLogger("datahub_mcp")
 
+class DataHubMCPToolError(RuntimeError):
+    """An MCP tool returned an error payload instead of data."""
+
 DATAHUB_GMS_URL = os.getenv("DATAHUB_GMS_URL", "http://localhost:8080")
 DATAHUB_GMS_TOKEN = os.getenv("DATAHUB_GMS_TOKEN", "")
 UVX_COMMAND = os.getenv("UVX_COMMAND", "uvx")
@@ -92,7 +95,12 @@ class DataHubMCPClient:
             raise RuntimeError("DataHub MCP not running: " + str(self.last_error))
         async with self._lock:
             result = await self._session.call_tool(tool, args)
-        return _unwrap(result)
+        payload = _unwrap(result)
+        if getattr(result, "isError", False):
+            raise DataHubMCPToolError(str(payload)[:400])
+        if isinstance(payload, str) and "validation error for call[" in payload:
+            raise DataHubMCPToolError(payload[:400])
+        return payload
 
 
 def _unwrap(result: Any) -> Any:
@@ -151,6 +159,22 @@ def _term_names(payload: Any) -> List[str]:
     return out
 
 
+def _owner_names(payload: Any) -> List[str]:
+    out: List[str] = []
+    for urn in _urns(payload, "corpuser"):
+        name = urn.split("urn:li:corpuser:", 1)[-1].strip("()")
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _classification(terms: List[str]) -> Optional[str]:
+    for term in terms:
+        if term.startswith("Classification."):
+            return term.split(".", 1)[1]
+    return None
+
+
 client = DataHubMCPClient()
 
 
@@ -169,13 +193,16 @@ async def enrich_asset(
         "urn": None,
         "tags": [],
         "glossary_terms": [],
+        "owner": None,
+        "owners": [],
+        "classification": None,
         "downstream_count": 0,
         "downstream_urns": [],
         "metadata_found": False,
         "errors": [],
     }
 
-    search_args: Dict[str, Any] = {"query": table, "search_strategy": "keyword"}
+    search_args: Dict[str, Any] = {"query": table, "num_results": 10}
     if platform:
         search_args["filter"] = "platform = " + platform
 
@@ -202,6 +229,10 @@ async def enrich_asset(
         facts["tools_used"].append("get_entities")
         facts["tags"] = _tag_names(entity)
         facts["glossary_terms"] = _term_names(entity)
+        owners = _owner_names(entity)
+        facts["owners"] = owners
+        facts["owner"] = owners[0] if owners else None
+        facts["classification"] = _classification(facts["glossary_terms"])
     except Exception as exc:
         facts["errors"].append("get_entities: " + str(exc))
 
@@ -209,7 +240,7 @@ async def enrich_asset(
         try:
             lineage = await client.call(
                 "get_lineage",
-                {"urn": urn, "direction": "DOWNSTREAM", "max_hops": 2},
+                {"urn": urn, "upstream": False, "max_hops": 2, "max_results": 30},
             )
             facts["tools_used"].append("get_lineage")
             downstream = [u for u in _urns(lineage, "dataset") if u != urn]

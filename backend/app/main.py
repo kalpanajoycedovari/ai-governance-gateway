@@ -4,7 +4,24 @@ from pydantic import BaseModel
 from .config import settings
 from .deterministic import checks
 from .kb import retrieve
-app = FastAPI(title="Agent Governance Layer - core")
+from contextlib import asynccontextmanager
+
+from .datahub_mcp import client as datahub_mcp_client
+from .mcp_routes import router as mcp_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Open one long-lived DataHub MCP stdio session for the process.
+    await datahub_mcp_client.start()
+    try:
+        yield
+    finally:
+        await datahub_mcp_client.stop()
+
+
+app = FastAPI(title="Agent Governance Layer - core", lifespan=lifespan)
+app.include_router(mcp_router)
 class Trace(BaseModel):
     trace_id: str
     timestamp: str

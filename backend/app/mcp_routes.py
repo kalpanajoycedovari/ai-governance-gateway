@@ -46,3 +46,20 @@ async def enrich_get(
 ) -> Dict[str, Any]:
     """GET twin, so n8n on Windows can dodge the hanging-POST bug."""
     return await enrich_asset(table, action, platform)
+
+@router.get("/raw")
+async def raw_call(
+    tool: str = Query(...),
+    args_json: str = Query("{}"),
+) -> Dict[str, Any]:
+    """Call any MCP tool with raw JSON args and return the unmassaged result."""
+    import json as _json
+
+    if not client.ready:
+        raise HTTPException(503, "MCP not running: " + str(client.last_error))
+    try:
+        args = _json.loads(args_json)
+    except Exception as exc:
+        raise HTTPException(400, "bad args_json: " + str(exc))
+    result = await client.call(tool, args)
+    return {"tool": tool, "args": args, "result": result}
