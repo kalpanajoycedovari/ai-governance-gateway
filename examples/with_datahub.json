@@ -1,0 +1,19 @@
+﻿{
+    "decision":  "human_review",
+    "risk_score":  55,
+    "risk_tier":  "limited",
+    "checks":  {
+                   "compliance":  true,
+                   "security":  true,
+                   "privacy":  true,
+                   "permission":  false
+               },
+    "reasons":  [
+                    "action \u0027delete\u0027 requires human oversight (EU AI Act Art. 14)",
+                    "AI interaction not disclosed to user (EU AI Act Art. 50)"
+                ],
+    "explanation":  "The decision is to require human review. This is because the action of deleting something requires human oversight, as stated in Article 14 of the EU AI Act, and the interaction with AI was not properly disclosed to the user, which is a requirement under Article 50 of the EU AI Act.",
+    "report_id":  "GOV-20260808-FC9FC8",
+    "report_file":  "governance_report_a7_20260808_161835.docx",
+    "report_download":  "http://localhost:8010/report/download/governance_report_a7_20260808_161835.docx"
+}

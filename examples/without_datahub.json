@@ -1,0 +1,18 @@
+﻿{
+    "decision":  "deny",
+    "risk_score":  85,
+    "risk_tier":  "high",
+    "checks":  {
+                   "compliance":  false,
+                   "security":  true,
+                   "privacy":  true,
+                   "permission":  false
+               },
+    "reasons":  [
+                    "Non-compliant: UNCLEAR [[1] (GDPR)]: implement appropriate technical and organisational measures — dataset metadata is incomplete, cannot determine if technical and organisational measures are in place | UNCLEAR [[2] (GDPR)]: process personal data lawfully, fairly and transparently — dataset metadata is incomplete, cannot determine if personal data is being processed | UNCLEAR [[3] (GDPR)]: have a lawful basis for processing — dataset metadata is incomplete, cannot determine if a lawful basis for processing exists | UNCLEAR [[4] (GDPR)]: provide safeguards for automated decision-making — dataset metadata is incomplete, cannot determine if automated decision-making is involved"
+                ],
+    "explanation":  "The decision is to deny due to non-compliance with the GDPR. The dataset metadata is incomplete, making it unclear if appropriate technical and organisational measures are in place (Article 1), if personal data is being processed lawfully, fairly, and transparently (Article 2), if there is a lawful basis for processing (Article 3), and if safeguards for automated decision-making are provided (Article 4). As a result, it cannot be determined if the processing of personal data meets the required standards, leading to the denial of compliance.",
+    "report_id":  "GOV-20260808-D2CE2F",
+    "report_file":  "governance_report_a7_20260808_161837.docx",
+    "report_download":  "http://localhost:8010/report/download/governance_report_a7_20260808_161837.docx"
+}

@@ -1,0 +1,69 @@
+{
+  "name": "policy_classification",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -256,
+        -64
+      ],
+      "id": "fedcff94-fd3f-4dbb-99cb-2c57142321f3",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Classification Policy helper\n// Reads the DataHub info the manager sends and gives a verdict.\n\nconst input = $input.first().json;\n\n// The manager will send us the datahub_context object.\nconst dh = input.datahub_context || input;\n\nconst classification = (dh.classification || 'UNKNOWN').toUpperCase();\nconst dataset = dh.dataset || 'unknown dataset';\n\nlet verdict = 'approve';\nlet reason = '';\n\nif (classification === 'PII') {\n  verdict = 'deny';\n  reason = \"Classification Policy: '\" + dataset + \"' is PII (personal data) — blocked.\";\n} else if (classification === 'CONFIDENTIAL') {\n  verdict = 'human_review';\n  reason = \"Classification Policy: '\" + dataset + \"' is Confidential — needs a human to review.\";\n} else if (classification === 'INTERNAL') {\n  verdict = 'approve';\n  reason = \"Classification Policy: '\" + dataset + \"' is Internal — allowed.\";\n} else if (classification === 'PUBLIC') {\n  verdict = 'approve';\n  reason = \"Classification Policy: '\" + dataset + \"' is Public — allowed.\";\n} else {\n  verdict = 'human_review';\n  reason = \"Classification Policy: classification is UNKNOWN — needs a human to review.\";\n}\n\nreturn { json: { policy: 'classification', verdict, reason } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        -64
+      ],
+      "id": "4f8f7132-d35e-443d-b547-1e66adbbbe53",
+      "name": "Code in JavaScript"
+    }
+  ],
+  "pinData": {
+    "When Executed by Another Workflow": [
+      {
+        "json": {
+          "datahub_context": {
+            "dataset": "raw_customers",
+            "classification": "PII"
+          }
+        }
+      }
+    ]
+  },
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "8a86497a-7607-4841-a2cf-c15077a8262b",
+  "meta": {
+    "instanceId": "247a5d09ac5462b7f6041f9bc15cb02b0cdecaa8cebbc241a44b5a08a7d6426e"
+  },
+  "nodeGroups": [],
+  "id": "rdjRfCYOqK14pBut",
+  "tags": []
+}

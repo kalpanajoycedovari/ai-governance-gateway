@@ -1,0 +1,69 @@
+{
+  "name": "policy_lineage",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "3ac2c58c-55c6-4309-8242-e8b17e48d3b1",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Lineage Policy helper (blast radius)\n// The more tables depend on this one, the riskier the action.\n\nconst input = $input.first().json;\nconst dh = input.datahub_context || input;\n\nconst dataset = dh.dataset || 'unknown dataset';\nconst downstream = (typeof dh.downstream_count === 'number') ? dh.downstream_count : 0;\n\n// Thresholds you can tune later.\nconst HIGH_BLAST = 50;   // 50+ dependents = very risky\nconst SOME_BLAST = 5;    // 5-49 dependents = needs a look\n\nlet verdict = 'approve';\nlet reason = '';\n\nif (downstream >= HIGH_BLAST) {\n  verdict = 'deny';\n  reason = \"Lineage Policy: '\" + dataset + \"' has \" + downstream + \" downstream tables — huge blast radius, blocked.\";\n} else if (downstream >= SOME_BLAST) {\n  verdict = 'human_review';\n  reason = \"Lineage Policy: '\" + dataset + \"' has \" + downstream + \" downstream tables — needs a human to review.\";\n} else {\n  verdict = 'approve';\n  reason = \"Lineage Policy: '\" + dataset + \"' has only \" + downstream + \" downstream tables — low blast radius.\";\n}\n\nreturn { json: { policy: 'lineage', verdict, reason } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "a9520874-36ef-4adb-94b5-f8ce485ffbef",
+      "name": "Code in JavaScript"
+    }
+  ],
+  "pinData": {
+    "When Executed by Another Workflow": [
+      {
+        "json": {
+          "datahub_context": {
+            "dataset": "raw_products",
+            "downstream_count": 150
+          }
+        }
+      }
+    ]
+  },
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "6dbab9f6-4969-45e2-9f2d-b46dd9a532c6",
+  "meta": {
+    "instanceId": "247a5d09ac5462b7f6041f9bc15cb02b0cdecaa8cebbc241a44b5a08a7d6426e"
+  },
+  "nodeGroups": [],
+  "id": "oim7VH6mtWB78qTd",
+  "tags": []
+}

@@ -252,3 +252,72 @@ references such as "Article 5(1)(c)" that embeddings tend to blur together.
 The language model extracts facts. Deterministic code makes decisions. A model
 can be talked into things, a fixed rule cannot, and it can be explained to an
 auditor line by line.
+
+## Repository layout
+
+```
+backend/          FastAPI service: MCP bridge, hybrid retrieval, report generation
+datahub/          DataHub ingestion recipes and the glossary stamping script
+governance_core/  Deterministic policy rules
+workflows/        n8n workflow exports (see import order below)
+examples/         Sample outputs, including both arms of the controlled comparison
+docs/images/      Screenshots used in this README
+```
+
+## Running it yourself
+
+### 1. Start the services
+
+DataHub via the official quickstart (GMS on 8080, frontend on 9002). Qdrant and
+Postgres via Docker. n8n via Docker, mapped to host port 5680.
+
+### 2. Start the backend
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8010
+```
+
+The host must be `0.0.0.0` rather than the default loopback, otherwise the n8n
+container cannot reach the gateway at `host.docker.internal:8010`.
+
+Confirm the MCP handshake before going further:
+
+```bash
+curl http://localhost:8010/mcp/health
+```
+
+Expect `mcp_ready: true` and a list of eight tools.
+
+### 3. Import the workflows
+
+Import order matters. n8n cannot publish a workflow whose sub-workflows are
+unpublished, so import and publish the two policy workflows first:
+
+1. `workflows/policy_classification.json`
+2. `workflows/policy_lineage.json`
+3. `workflows/data_reliability_governance_agent.json`
+4. `workflows/data_reliability_governance_agent_NO_DATAHUB.json`
+
+The fourth is the control arm for the comparison described above. It is
+identical to the main workflow except that its enrichment node returns an empty
+context instead of calling the MCP server. Import it if you want to reproduce
+the before/after result rather than take this README's word for it.
+
+Credentials are not included in the exports. You will need to supply your own
+Groq API key and Postgres connection in n8n after importing.
+
+## Sample outputs
+
+`examples/` contains the artifacts the pipeline produces, so the output can be
+inspected without running the stack:
+
+| File | What it is |
+|---|---|
+| `with_datahub.json` | Gateway response with catalogue context, verdict `human_review` |
+| `without_datahub.json` | Same request, control arm, verdict `deny` |
+| `sample_governance_report.docx` | Generated governance report for a single decision |
+

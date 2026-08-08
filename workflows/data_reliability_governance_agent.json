@@ -1,0 +1,1215 @@
+{
+  "name": "Data Reliability Governance Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "governance-gateway",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "bd45fe7f-e8b0-4504-803c-c586b8d6a997",
+      "name": "Governance Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -9072,
+        -336
+      ],
+      "webhookId": "03bb15bc-2894-43f3-979f-fde66c8597eb"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const b = $json.body || $json || {};\n\nconst out = {\n  ...b,\n  agent_id: b.agent_id || 'unknown-agent',\n  user_id: b.user_id || 'anonymous',\n  request: b.request || b.prompt || '',\n  action: (b.action || 'generate'),\n  tool: b.tool || null,\n  tool_args: b.tool_args || {},\n  confidence: (typeof b.confidence === 'number') ? b.confidence : 1,\n  disclosed: b.disclosed === true,\n  human_in_loop: b.human_in_loop === true,\n  allowed_tools: Array.isArray(b.allowed_tools) ? b.allowed_tools : [],\n  received_at: new Date().toISOString()\n};\n\n// Drop anything empty so it doesn't show as a blank red column.\nfor (const k of Object.keys(out)) {\n  const v = out[k];\n  if (v === null || v === undefined) delete out[k];\n  else if (Array.isArray(v) && v.length === 0) delete out[k];\n  else if (typeof v === 'object' && Object.keys(v).length === 0) delete out[k];\n}\n\nreturn { json: out };"
+      },
+      "id": "4b667c3b-b324-46dd-bce3-21a750ce86f9",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -8848,
+        -432
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"model\": \"llama-3.3-70b-versatile\", \"temperature\": 0, \"response_format\": {\"type\": \"json_object\"}, \"messages\": [ {\"role\": \"system\", \"content\": \"You are an intent-analysis component of an AI governance gateway. Classify the user request. Respond ONLY with JSON: {\\\"intent\\\": string, \\\"category\\\": string, \\\"purpose\\\": string, \\\"summary\\\": string}. category must be one of: biometric, credit, employment, law_enforcement, medical, finance, content, search, general, social_scoring, manipulation. No prose, JSON only.\"}, {\"role\": \"user\", \"content\": {{ JSON.stringify($('Normalize Input').item.json.request) }}} ] }",
+        "options": {}
+      },
+      "id": "db5497c5-ffbb-4319-a90d-170d9b83aced",
+      "name": "Intent Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -8400,
+        -432
+      ],
+      "credentials": {
+        "groqApi": {
+          "id": "wylSB7yQHKxjBusL",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "let out = {};\ntry { out = JSON.parse($json.choices[0].message.content); }\ncatch (e) { out = { intent:'unknown', category:'unknown', purpose:'', summary:'', parse_error:String(e) }; }\nreturn { json: out };"
+      },
+      "id": "2efe4a86-c2e3-464a-b3b3-a5db4a599f25",
+      "name": "Parse Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -8176,
+        -336
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const intent = $('Parse Intent').item.json;\nconst inp = $('Normalize Input').item.json;\n\n// ----- EDIT: base risk score per category (0-100) -----\nconst CATEGORY_SCORE = {\n  biometric:90, credit:80, employment:80, law_enforcement:90, medical:75,\n  finance:70, content:30, search:20, general:25, unknown:40\n};\nconst cat = (intent.category || 'unknown').toLowerCase();\nlet score = (CATEGORY_SCORE[cat] !== undefined) ? CATEGORY_SCORE[cat] : 40;\n\nconst HIGH_IMPACT = ['delete','transfer','pay','send','deploy','email','post','execute'];\nif (HIGH_IMPACT.includes((inp.action||'').toLowerCase())) score += 15;\nif (inp.confidence < 0.6) score += 10;\nscore = Math.max(0, Math.min(100, score));\n\nlet tier = 'minimal';\nif (score >= 80) tier = 'high';\nelse if (score >= 50) tier = 'limited';\n\n// EU AI Act Art. 5 - prohibited uses\nconst UNACCEPTABLE = ['social_scoring','manipulation'];\nif (UNACCEPTABLE.includes(cat)) { tier = 'unacceptable'; score = 100; }\n\nreturn { json: { risk_score: score, risk_tier: tier, risk_reasons: [\n  `category ${cat}`, `action ${inp.action}`, `confidence ${inp.confidence}`\n] } };"
+      },
+      "id": "6433021d-111a-484d-ab94-bcf4fe84fdba",
+      "name": "Risk Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7952,
+        -336
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8010/kb/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"query\": {{ JSON.stringify(($('Parse Intent').item.json.summary || '') + ' ' + ($('Normalize Input').item.json.action || '')) }}, \"k\": 4, \"frameworks\": [\"EU_AI_ACT\",\"GDPR\",\"ISO_42001\",\"NIST_AI_RMF\"] }",
+        "options": {}
+      },
+      "id": "6d248239-a933-4a64-aec9-f6f4496bbca1",
+      "name": "Policy Retrieval",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -7728,
+        -336
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const r = $json || {};\nlet items = r.results || r.points || r.matches || r.hits || [];\nif (!Array.isArray(items)) items = [];\nconst policyText = items.map((x,i) => {\n  const t = x.text || (x.payload && x.payload.text) || x.content || JSON.stringify(x);\n  const s = x.source || (x.payload && x.payload.source) || x.framework || 'policy';\n  return `[${i+1}] (${s}) ${t}`;\n}).join('\\n');\nconst sources = items.map(x => x.source || (x.payload && x.payload.source) || 'policy');\nreturn { json: { policyText: policyText || 'No policy retrieved.', sources } };"
+      },
+      "id": "85441331-b3c1-4875-bbc4-5606abc23074",
+      "name": "Prep Policy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7504,
+        -336
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"model\": \"llama-3.3-70b-versatile\", \"temperature\": 0, \"response_format\": {\"type\": \"json_object\"}, \"messages\": [ {\"role\": \"system\", \"content\": \"You are the compliance-EXTRACTION component of an AI governance gateway. You do NOT decide compliance. Your only job is to read the RETRIEVED POLICY and report what it requires and whether the request appears to meet each requirement. Do not invent obligations not present in the policy text. You are given verified DATASET METADATA from a data catalogue (DataHub). Treat this metadata as ground truth about the data involved. In particular: if the dataset classification is 'Public' or 'Internal' and contains no PII, then GDPR personal-data obligations DO NOT APPLY and must NOT be raised — mark such obligations 'met' with justification 'dataset is classified {classification}, contains no personal data'. Only raise GDPR/personal-data obligations when the metadata indicates PII (classification 'PII' or tags include 'pii'/'gdpr'). Respond ONLY with JSON: {\\\"obligations\\\":[{\\\"article\\\":string,\\\"requirement\\\":string,\\\"status\\\":\\\"met\\\"|\\\"not_met\\\"|\\\"unclear\\\",\\\"justification\\\":string}],\\\"articles\\\":string[]}. article = the specific clause/article identifier from the policy. status reflects ONLY what the policy text, request, and dataset metadata support: use \\\"unclear\\\" whenever genuinely ambiguous. Never guess.\"}, {\"role\": \"user\", \"content\": {{ JSON.stringify('REQUEST:\\n' + $('Normalize Input').item.json.request + '\\n\\nDATASET METADATA (from DataHub, treat as ground truth):\\n' + JSON.stringify($('DataHub Enrichment').item.json.datahub_context) + '\\n\\nRETRIEVED POLICY:\\n' + $('Prep Policy').item.json.policyText + '\\n\\nRISK TIER: ' + $('Risk Classification').item.json.risk_tier) }}} ] }",
+        "options": {}
+      },
+      "id": "24ff6a2f-09ae-4aa2-ac1b-9e3322cf4679",
+      "name": "Compliance Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -7280,
+        -336
+      ],
+      "credentials": {
+        "groqApi": {
+          "id": "wylSB7yQHKxjBusL",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse Compliance — LLM extracts obligations; CODE decides the verdict.\nlet ext = { obligations: [], articles: [] };\ntry {\n  ext = JSON.parse($json.choices[0].message.content);\n} catch (e) {\n  return { json: {\n    compliant: false,\n    verdict: 'human_review',\n    reasoning: 'Compliance extraction could not be parsed: ' + String(e),\n    articles: [],\n    obligations: []\n  } };\n}\n\nconst obligations = Array.isArray(ext.obligations) ? ext.obligations : [];\nlet parts_noOblig = '';\n\nconst notMet  = obligations.filter(o => o && o.status === 'not_met');\nconst unclear = obligations.filter(o => o && o.status === 'unclear');\nconst met     = obligations.filter(o => o && o.status === 'met');\n\nlet compliant;\nlet verdict;\n\nif (notMet.length > 0) {\n  compliant = false;\n  verdict = 'non_compliant';\n} else if (unclear.length > 0) {\n  compliant = false;\n  verdict = 'human_review';\n} else if (obligations.length === 0) {\n  const tier = $('Risk Classification').item.json.risk_tier;\n  if (tier === 'high' || tier === 'unacceptable') {\n    compliant = false;\n    verdict = 'human_review';\n    parts_noOblig = 'No policy obligation was retrieved for a ' + tier + '-risk action; escalating (policy gap).';\n  } else {\n    compliant = true;\n    verdict = 'compliant';\n    parts_noOblig = 'No applicable policy obligation found; permitted at ' + tier + ' risk tier.';\n  }\n} else {\n  compliant = true;\n  verdict = 'compliant';\n}\n\nconst parts = [];\nnotMet.forEach(o => parts.push('NOT MET [' + (o.article||'?') + ']: ' + (o.requirement||'') + ' — ' + (o.justification||'')));\nunclear.forEach(o => parts.push('UNCLEAR [' + (o.article||'?') + ']: ' + (o.requirement||'') + ' — ' + (o.justification||'')));\nif (parts.length === 0 && met.length > 0) parts.push('All ' + met.length + ' policy obligation(s) met.');\nif (obligations.length === 0) parts.push(parts_noOblig);\n\nconst articles = Array.isArray(ext.articles) ? ext.articles : [];\nobligations.forEach(o => { if (o && o.article) articles.push(o.article); });\n\nreturn { json: {\n  compliant,\n  reasoning: parts.join(' | '),\n  articles: Array.from(new Set(articles)),\n  verdict,\n  obligations\n} };"
+      },
+      "id": "a8173f05-c6a2-4346-a15e-6f1b6b44dc1c",
+      "name": "Parse Compliance",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7056,
+        -336
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const inp = $('Normalize Input').item.json;\nconst text = (inp.request || '') + ' ' + JSON.stringify(inp.tool_args || {});\n\n// ----- EDIT: injection / jailbreak patterns -----\nconst INJECTION = [/ignore (all |the )?(previous |prior )?instructions/i, /system prompt/i,\n  /disregard (the |all )?/i, /jailbreak/i, /developer mode/i, /exfiltrate/i];\nconst flags = [];\nINJECTION.forEach(rx => { if (rx.test(text)) flags.push('possible prompt injection ('+rx+')'); });\n\nconst allowed = Array.isArray(inp.allowed_tools) ? inp.allowed_tools : [];\nif (inp.tool && allowed.length && !allowed.includes(inp.tool)) {\n  flags.push(`tool '${inp.tool}' not on allow-list`);\n}\n\n// ----- EDIT: dangerous tokens in tool args -----\nconst DANGEROUS = ['rm -rf','drop table','; delete','sudo ','curl http'];\nDANGEROUS.forEach(d => { if (text.toLowerCase().includes(d)) flags.push('dangerous token: '+d); });\n\nreturn { json: { security_pass: flags.length === 0, security_flags: flags } };"
+      },
+      "id": "65c2e054-baf7-45b8-aeac-e3decb5af980",
+      "name": "Security Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6832,
+        -336
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const inp = $('Normalize Input').item.json;\nconst text = (inp.request || '') + ' ' + JSON.stringify(inp.tool_args || {});\n// ----- EDIT: PII patterns -----\nconst PII = {\n  email: /[\\w.+-]+@[\\w-]+\\.[\\w.-]+/g,\n  phone: /\\b\\+?\\d[\\d\\s-]{8,}\\d\\b/g,\n  card:  /\\b(?:\\d[ -]*?){13,16}\\b/g,\n  ni:    /\\b[A-Z]{2}\\d{6}[A-Z]\\b/g\n};\nconst found = {};\nfor (const k in PII) { const m = text.match(PII[k]); if (m) found[k] = m.length; }\nreturn { json: { privacy_pass: Object.keys(found).length === 0, pii_found: found } };"
+      },
+      "id": "d5c2315e-43bf-4384-b804-a5a05564115f",
+      "name": "Privacy Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6608,
+        -336
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const inp = $('Normalize Input').item.json;\nconst reasons = [];\nlet pass = true;\n// ----- EDIT: which actions require a human -----\nconst HIGH_IMPACT = ['delete','transfer','pay','send','deploy','post','execute'];\nif (HIGH_IMPACT.includes((inp.action||'').toLowerCase()) && !inp.human_in_loop) {\n  pass = false; reasons.push(`action '${inp.action}' requires human oversight (EU AI Act Art. 14)`);\n}\nif (!inp.disclosed) { reasons.push('AI interaction not disclosed to user (EU AI Act Art. 50)'); }\nreturn { json: { permission_pass: pass, permission_reasons: reasons } };"
+      },
+      "id": "7681317e-ac79-48ee-a16a-94d03534ab52",
+      "name": "Permission Verification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6384,
+        -336
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const risk = $('Risk Classification').item.json;\nconst comp = $('Parse Compliance').item.json;\nconst sec  = $('Security Check').item.json;\nconst priv = $('Privacy Check').item.json;\nconst perm = $('Permission Verification').item.json;\nconst intent = $('Parse Intent').item.json;\nconst inp  = $('Normalize Input').item.json;\nconst dh   = ($('DataHub Enrichment').item?.json?.datahub_context) || { resolved: false, note: 'no datahub_context' };\nconst reasons = [];\nlet decision = 'approve';\nlet risk_score = risk.risk_score;\nlet risk_tier  = risk.risk_tier;\nconst risk_reasons = Array.isArray(risk.risk_reasons) ? risk.risk_reasons.slice() : [];\nconst HIGH_IMPACT = ['delete','transfer','pay','send','deploy','post','execute'];\nconst isHighImpact = HIGH_IMPACT.includes((inp.action||'').toLowerCase());\nif (isHighImpact && risk_tier !== 'unacceptable') {\n  if (risk_score < 55) {\n    risk_score = 55;\n    risk_reasons.push(\"high-impact action '\" + inp.action + \"' raised residual risk to the limited tier\");\n  }\n  if (risk_score >= 80) risk_tier = 'high';\n  else if (risk_score >= 50) risk_tier = 'limited';\n}\n\n// ---- DataHub metadata-aware escalation ----\nlet dh_escalate_human = false;\nconst DOWNSTREAM_THRESHOLD = 5;\n\nif (isHighImpact) {\n  if (dh.resolved === true) {\n    const cls = (dh.classification || '').toUpperCase();\n    if (cls === 'PII') {\n      if (risk_score < 80) risk_score = 80;\n      risk_tier = 'high';\n      dh_escalate_human = true;\n      risk_reasons.push(\"DataHub: target '\" + dh.dataset + \"' is classified PII (owner: \" + (dh.owner||'unknown') + \") — GDPR-regulated personal data\");\n    } else if (cls === 'CONFIDENTIAL') {\n      if (risk_score < 70) risk_score = 70;\n      if (risk_score >= 80) risk_tier = 'high'; else risk_tier = 'limited';\n      dh_escalate_human = true;\n      risk_reasons.push(\"DataHub: target '\" + dh.dataset + \"' is Confidential business data (owner: \" + (dh.owner||'unknown') + \")\");\n    }\n    const dc = (typeof dh.downstream_count === 'number') ? dh.downstream_count : 0;\n    if (dc >= DOWNSTREAM_THRESHOLD) {\n      if (risk_score < 80) risk_score = 80;\n      risk_tier = 'high';\n      dh_escalate_human = true;\n      risk_reasons.push(\"DataHub: high blast radius — \" + dc + \" downstream datasets depend on '\" + dh.dataset + \"'\");\n    }\n  } else {\n    dh_escalate_human = true;\n    risk_reasons.push(\"DataHub: could not resolve target metadata (\" + (dh.note||'unresolved') + \") — treating as elevated risk\");\n  }\n}\n// ---- end DataHub block ----\n\n// ---- Modular policy summary (computed inline, per-item) ----\nconst policyAgg = (() => {\n  const RANK = { approve: 0, human_review: 1, deny: 2 };\n  const nameByRank = { 0: 'approve', 1: 'human_review', 2: 'deny' };\n  const ds = dh.dataset || 'unknown';\n  const cls = (dh.classification || 'UNKNOWN').toUpperCase();\n  const results = [];\n  // classification policy\n  let cv = 'approve', cr = '';\n  if (cls === 'PII') { cv = 'deny'; cr = \"Classification Policy: '\" + ds + \"' is PII (personal data) — blocked.\"; }\n  else if (cls === 'CONFIDENTIAL') { cv = 'human_review'; cr = \"Classification Policy: '\" + ds + \"' is Confidential — needs a human to review.\"; }\n  else if (cls === 'INTERNAL') { cv = 'approve'; cr = \"Classification Policy: '\" + ds + \"' is Internal — allowed.\"; }\n  else if (cls === 'PUBLIC') { cv = 'approve'; cr = \"Classification Policy: '\" + ds + \"' is Public — allowed.\"; }\n  else { cv = 'human_review'; cr = \"Classification Policy: classification is UNKNOWN — needs a human to review.\"; }\n  results.push({ policy: 'classification', verdict: cv, reason: cr });\n  // lineage policy\n  const dc = (typeof dh.downstream_count === 'number') ? dh.downstream_count : 0;\n  let lv = 'approve', lr = '';\n  if (dc >= 50) { lv = 'deny'; lr = \"Lineage Policy: '\" + ds + \"' has \" + dc + \" downstream tables — huge blast radius, blocked.\"; }\n  else if (dc >= 5) { lv = 'human_review'; lr = \"Lineage Policy: '\" + ds + \"' has \" + dc + \" downstream tables — needs a human to review.\"; }\n  else { lv = 'approve'; lr = \"Lineage Policy: '\" + ds + \"' has only \" + dc + \" downstream tables — low blast radius.\"; }\n  results.push({ policy: 'lineage', verdict: lv, reason: lr });\n  let worst = 0;\n  for (const r of results) worst = Math.max(worst, RANK[r.verdict] || 0);\n  return { source: 'policy_aggregator', final_verdict: nameByRank[worst], policy_results: results, reasons: results.map(r => r.reason) };\n})();\n// ---- end modular policy summary ----\n\nif (risk_tier === 'unacceptable') { decision = 'deny'; reasons.push('Unacceptable-risk use (EU AI Act Art. 5).'); }\nif (sec.security_pass === false)  { decision = 'deny'; reasons.push('Security check failed: ' + (sec.security_flags||[]).join('; ')); }\nif (comp.compliant === false)     { decision = 'deny'; reasons.push('Non-compliant: ' + (comp.reasoning || '')); }\nif (priv.privacy_pass === false)  { decision = 'deny'; reasons.push('Personal data present in request/arguments: ' + JSON.stringify(priv.pii_found)); }\nif (decision !== 'deny') {\n  if (perm.permission_pass === false) { decision = 'human_review'; (perm.permission_reasons||[]).forEach(r => reasons.push(r)); }\n  else if (risk_tier === 'high') { decision = 'human_review'; reasons.push('High-risk tier requires human review (EU AI Act Art. 14).'); }\n  else if (dh_escalate_human) { decision = 'human_review'; reasons.push('DataHub metadata context requires human review.'); }\n  else if (inp.confidence < 0.6) { decision = 'human_review'; reasons.push('Low model confidence.'); }\n}\nif (decision === 'approve') reasons.push('All control checks passed.');\n\n// ---- Policy Aggregator override (strictest wins) ----\n{\n  const RANK = { approve: 0, human_review: 1, deny: 2 };\n  const aggV = String(policyAgg.final_verdict).toLowerCase();\n  const curR = (decision in RANK) ? RANK[decision] : 0;\n  const aggR = (aggV in RANK) ? RANK[aggV] : 0;\n  if (aggR > curR) {\n    decision = aggV;\n    reasons.push(\"Policy Aggregator override: escalated to '\" + aggV + \"' by modular policy checks.\");\n    (policyAgg.reasons || []).forEach(r => reasons.push(\"Policy → \" + r));\n  }\n}\n// ---- end override ----\n\nconst articles = new Set();\n(comp.articles || []).forEach(a => { const s = String(a).trim(); if (/^Article\\s*\\d+/i.test(s)) articles.add(s); });\nconst artRe = /(?:Article|Art\\.?)\\s*(\\d+)/gi;\nreasons.forEach(r => { let m; while ((m = artRe.exec(String(r))) !== null) articles.add('Article ' + m[1]); });\nreturn { json: {\n  decision, risk_score, risk_tier,\n  checks: { compliance: comp.compliant === true, security: sec.security_pass, privacy: priv.privacy_pass, permission: perm.permission_pass },\n  datahub_context: dh,\n  policy_aggregator: policyAgg,\n  check_detail: {\n    risk_reasons,\n    compliance_reasoning: comp.reasoning || '',\n    compliance_articles: comp.articles || [],\n    security_flags: sec.security_flags || [],\n    pii_found: priv.pii_found || {},\n    permission_reasons: perm.permission_reasons || []\n  },\n  intent: intent.intent, category: intent.category, purpose: intent.purpose, summary: intent.summary,\n  articles: Array.from(articles),\n  reasons,\n  agent_id: inp.agent_id, user_id: inp.user_id, action: inp.action,\n  tool: inp.tool, confidence: inp.confidence, disclosed: inp.disclosed, human_in_loop: inp.human_in_loop,\n  request: inp.request, decided_at: new Date().toISOString()\n} };"
+      },
+      "id": "c2c21c91-75eb-4927-b034-fd36528bfdac",
+      "name": "Decision Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6160,
+        -336
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "approve",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "9f44d0ae-c22c-4456-bd65-c68b8e3a3640"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Approve"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "deny",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "5c18fa14-544e-49a7-85fe-f14b8320591c"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Deny"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "human_review",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "dc95b7c1-ab77-4238-9c12-56b77b2dcf78"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Human Review"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e25c1a12-3e14-42fc-928b-5ec7244629dc",
+      "name": "Route Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -5936,
+        -448
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {},
+      "id": "eef2ea85-cf78-4f28-946e-9adf321691ee",
+      "name": "Approve",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -5264,
+        -624
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "55fc0923-1f8b-44d7-9bbc-ebeebb0c351b",
+      "name": "Deny",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -5264,
+        -432
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "01a17e50-3bf8-433b-99b8-25fbe02f6e09",
+      "name": "Human Review",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -5712,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"model\": \"llama-3.3-70b-versatile\", \"temperature\": 0, \"messages\": [ {\"role\": \"system\", \"content\": \"You write clear, plain-English governance explanations for a compliance reviewer. Given the decision, the reasons, and cited articles, write ONE short paragraph that a non-technical reviewer can sign off. Start with the decision. Cite article numbers where given. No JSON, prose only.\"}, {\"role\": \"user\", \"content\": {{ JSON.stringify('DECISION: ' + $('Decision Engine').item.json.decision + '\\nREASONS: ' + JSON.stringify($('Decision Engine').item.json.reasons) + '\\nARTICLES: ' + JSON.stringify($('Decision Engine').item.json.articles)) }}} ] }",
+        "options": {}
+      },
+      "id": "a87db058-86d0-45db-8d89-38426170d11e",
+      "name": "Explanation Generator",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -5040,
+        -432
+      ],
+      "credentials": {
+        "groqApi": {
+          "id": "wylSB7yQHKxjBusL",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { explanation: $json.choices[0].message.content } };"
+      },
+      "id": "54d3020f-60de-49b8-adeb-8ac2bf037af6",
+      "name": "Parse Explanation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4816,
+        -432
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8010/audit/log",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"record\": {{ JSON.stringify($('Decision Engine').item.json) }}, \"explanation\": {{ JSON.stringify($('Parse Explanation').item.json.explanation) }} }",
+        "options": {}
+      },
+      "id": "8becca84-4f41-458f-8bbd-0c14ff5c3dca",
+      "name": "Audit Logger",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -4592,
+        -432
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8010/report",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"record\": {{ JSON.stringify($('Decision Engine').item.json) }}, \"explanation\": {{ JSON.stringify($('Parse Explanation').item.json.explanation) }} }",
+        "options": {}
+      },
+      "id": "21586f78-89d3-4ae2-a25c-bc991a123912",
+      "name": "Generate Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -4368,
+        -432
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ decision: $('Decision Engine').item.json.decision, risk_score: $('Decision Engine').item.json.risk_score, risk_tier: $('Decision Engine').item.json.risk_tier, checks: $('Decision Engine').item.json.checks, reasons: $('Decision Engine').item.json.reasons, explanation: $('Parse Explanation').item.json.explanation, report_id: $('Generate Report').item.json.report_id, report_file: $('Generate Report').item.json.filename, report_download: \"http://localhost:8010\" + ($('Generate Report').item.json.download_url || \"\") }) }}",
+        "options": {}
+      },
+      "id": "0f732fed-d092-4e2d-89b1-8b42eb6deec5",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -3920,
+        -432
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ \"http://host.docker.internal:8010\" + $('Generate Report').item.json.download_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -4144,
+        -432
+      ],
+      "id": "4f16ad8b-0089-4e90-b10a-a07f863ef9c3",
+      "name": "Fetch Report File"
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "limitWaitTime": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -5264,
+        -240
+      ],
+      "id": "d2c482d0-96d1-445e-adbd-e3ca76a1e6a9",
+      "name": "Wait",
+      "webhookId": "6f7c10af-437a-4568-96a6-0379c1a523f9",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cac7c765-7c6d-4b29-b0f2-4ff8ca614616",
+              "name": "resume_url",
+              "value": "={{ $execution.resumeUrl }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -5488,
+        -240
+      ],
+      "id": "d104a74f-fe62-43c4-9c33-0e3569c1baf1",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// DataHub Enrichment — resolves the target dataset and pulls governance metadata.\n// Metadata is read through the open-source DataHub MCP server (mcp-server-datahub)\n// via the gateway's FastAPI bridge. MCP supplies facts; policy code decides.\n// Mode: \"Run Once for Each Item\". Fail-safe: never throws.\n\nconst MCP_ENRICH = 'http://host.docker.internal:8010/mcp/enrich';\n\nconst CATALOG = {\n  // Olist e-commerce warehouse (snowflake)\n  'customers':'snowflake','daily_revenue':'snowflake','dim_products':'snowflake',\n  'fct_order_performance':'snowflake','fct_revenue':'snowflake','orders_cleaned':'snowflake',\n  'raw_customers':'snowflake','raw_order_items':'snowflake','raw_orders':'snowflake',\n  'raw_payments':'snowflake','raw_products':'snowflake','raw_reviews':'snowflake',\n  'raw_sellers':'snowflake','stg_customers':'snowflake','stg_orders':'snowflake',\n  'stg_products':'snowflake','stg_reviews':'snowflake','stg_sellers':'snowflake',\n  // OpenBank finance data (postgres)\n  'openbank.raw.transactions':'postgres',\n  'openbank.marts.fct_monthly_spending':'postgres',\n  'openbank.marts.fct_savings_rate':'postgres',\n  'openbank.marts.fct_cashflow_daily':'postgres',\n  'openbank.marts.dim_recurring_subscriptions':'postgres',\n  'openbank.marts.fct_category_trends':'postgres',\n  'openbank.ml.cashflow_forecast':'postgres',\n  'openbank.ml.transaction_categories':'postgres',\n};\nconst KNOWN = Object.keys(CATALOG);\n\nfunction resolveDataset(item) {\n  const ta = item.tool_args || {};\n  for (const key of ['dataset','target','table','resource','name']) {\n    if (typeof ta[key] === 'string' && ta[key].trim()) {\n      const v = ta[key].trim().toLowerCase();\n      if (KNOWN.includes(v)) return v;\n    }\n  }\n  for (const key of ['target','dataset','table']) {\n    if (typeof item[key] === 'string' && item[key].trim()) {\n      const v = item[key].trim().toLowerCase();\n      if (KNOWN.includes(v)) return v;\n    }\n  }\n  const text = (item.request || '').toLowerCase();\n  const sorted = [...KNOWN].sort((a, b) => b.length - a.length);\n  for (const ds of sorted) {\n    if (text.includes(ds)) return ds;\n  }\n  return null;\n}\n\nfunction resolveAction(item) {\n  const ta = item.tool_args || {};\n  const raw = item.action || item.tool_name || ta.action || item.operation || '';\n  const v = String(raw).toLowerCase();\n  for (const a of ['delete','drop','truncate','export','deploy']) {\n    if (v.includes(a)) return a;\n  }\n  const text = (item.request || '').toLowerCase();\n  for (const a of ['delete','drop','truncate','export','deploy']) {\n    if (text.includes(a)) return a;\n  }\n  return 'read';\n}\n\nasync function fetchMetadata(dataset, platform, action) {\n  const res = await this.helpers.httpRequest({\n    method: 'GET',\n    url: MCP_ENRICH,\n    qs: { table: dataset, action: action, platform: platform },\n    json: true,\n  });\n  const d = (typeof res === 'string') ? JSON.parse(res) : res;\n  if (!d || !d.metadata_found) return null;\n  return {\n    owner: d.owner ?? null,\n    classification: d.classification ?? null,\n    tags: d.tags || [],\n    downstream_count: d.downstream_count ?? 0,\n    downstream_urns: d.downstream_urns || [],\n    urn: d.urn || null,\n    mcp_tools_used: d.tools_used || [],\n    metadata_source: 'datahub-mcp-server',\n  };\n}\n\n// --- process THIS single item ---\nconst item = $input.item.json;\nconst dataset = resolveDataset(item);\nconst platform = dataset ? CATALOG[dataset] : null;\nconst action = resolveAction(item);\n\nlet ctx = {\n  resolved: false,\n  dataset: dataset,\n  platform: platform,\n  action: action,\n  owner: null,\n  classification: null,\n  tags: [],\n  downstream_count: null,\n  metadata_source: 'datahub-mcp-server',\n  note: dataset ? 'metadata fetch not attempted' : 'no known dataset in request',\n};\n\nif (dataset) {\n  try {\n    const meta = await fetchMetadata.call(this, dataset, platform, action);\n    if (meta) {\n      ctx = { resolved: true, dataset, platform, action, ...meta, note: 'ok via mcp' };\n    } else {\n      ctx.note = 'dataset not found in DataHub';\n    }\n  } catch (e) {\n    ctx.note = 'mcp gateway unreachable: ' + (e.message || String(e));\n  }\n}\n\nreturn { json: { ...item, datahub_context: ctx } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -8624,
+        -432
+      ],
+      "id": "b1c439dd-902c-407f-88bc-dd43c5469e29",
+      "name": "DataHub Enrichment"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "rdjRfCYOqK14pBut",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/rdjRfCYOqK14pBut",
+          "cachedResultName": "policy_classification"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        -8400,
+        -624
+      ],
+      "id": "991fa084-7c89-4cbe-ba22-9f8fdaa33eb8",
+      "name": "Call 'policy_classification'"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "oim7VH6mtWB78qTd",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/oim7VH6mtWB78qTd",
+          "cachedResultName": "policy_lineage"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        -8400,
+        -240
+      ],
+      "id": "c9cb23a6-edd9-4970-9932-bd4ee0c17024",
+      "name": "Call 'policy_lineage'"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -8176,
+        -528
+      ],
+      "id": "df1d1d13-3fd0-445a-9213-5f62a090a76b",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregator: read each policy helper directly, pick the strictest verdict.\n// Strictness order: deny > human_review > approve\n\nconst rank = { approve: 0, human_review: 1, deny: 2 };\nconst nameByRank = { 0: 'approve', 1: 'human_review', 2: 'deny' };\n\n// List every policy helper node here by its exact name on the canvas.\nconst policyNodes = [\n  \"Call 'policy_classification'\",\n  \"Call 'policy_lineage'\"\n];\n\nlet worstRank = 0;\nconst policyResults = [];\nconst reasons = [];\n\nfor (const nodeName of policyNodes) {\n  let p;\n  try {\n    p = $(nodeName).first().json;\n  } catch (e) {\n    continue; // node didn't run / not found — skip safely\n  }\n  if (!p || !p.verdict) continue;\n\n  const v = String(p.verdict).toLowerCase();\n  const r = (v in rank) ? rank[v] : 0;\n\n  policyResults.push({ policy: p.policy || nodeName, verdict: v, reason: p.reason || '' });\n  if (p.reason) reasons.push(p.reason);\n\n  if (r > worstRank) worstRank = r;\n}\n\nconst final_verdict = nameByRank[worstRank];\n\nreturn { json: {\n  source: 'policy_aggregator',\n  final_verdict,\n  policy_results: policyResults,\n  reasons\n} };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7952,
+        -528
+      ],
+      "id": "6bc3d8fa-5181-47d4-b052-5d5596b8b0fa",
+      "name": "Policy Aggregator"
+    },
+    {
+      "parameters": {
+        "jsCode": "// TEST SCENARIOS\n// Three requests to run through the gateway.\n// Each one is written the way a person would say it.\n//\n// The point of these three: the words \"delete\" and \"export\"\n// are the same every time. What changes is WHAT is being\n// touched. A safe gateway must notice that difference.\n\nconst scenarios = [\n\n  {\n    scenario: \"1. Deleting a table full of customer personal data\",\n    plain_english: \"An AI agent wants to delete the customers table. This table holds real people's names and addresses, and two other tables are built on top of it.\",\n    expected: \"STOP — this should be refused\",\n\n    request: \"delete the raw_customers table\",\n    action: \"delete\",\n    tool: \"database\",\n  },\n\n  {\n    scenario: \"2. Deleting a harmless table of product information\",\n    plain_english: \"The exact same kind of request as above. But this table only holds product names and prices. Nothing private.\",\n    expected: \"ASK A PERSON — careful, but not an emergency\",\n\n    request: \"delete the raw_products table\",\n    action: \"delete\",\n    tool: \"database\",\n  },\n\n  {\n    scenario: \"3. Sending banking records out of the company\",\n    plain_english: \"An AI agent wants to export bank transaction records. This is money data and personal data at the same time.\",\n    expected: \"STOP — this should be refused\",\n\n    request: \"export the openbank.raw.transactions table\",\n    action: \"export\",\n    tool: \"database\",\n  },\n\n];\n\n// Wrap each one in the standard request shape the gateway expects.\nreturn scenarios.map(s => ({\n  json: {\n    agent_id: \"agent_007\",\n    user_id: \"user_123\",\n    request: s.request,\n    action: s.action,\n    tool: s.tool,\n    tool_args: {},\n    confidence: 1,\n    disclosed: false,\n    human_in_loop: false,\n    allowed_tools: [],\n\n    // Labels for humans reading the results. Ignored by the gateway.\n    scenario: s.scenario,\n    plain_english: s.plain_english,\n    expected: s.expected,\n  },\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9072,
+        -528
+      ],
+      "id": "72ef3ed6-6963-4db1-909b-c609564b2908",
+      "name": "Test Scenarios"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -9296,
+        -528
+      ],
+      "id": "df3a4eee-09a0-435a-9057-8bbd4de58f05",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "value": "raw",
+          "mode": "list",
+          "cachedResultName": "raw"
+        },
+        "table": {
+          "__rl": true,
+          "value": "governance_audit",
+          "mode": "list",
+          "cachedResultName": "governance_audit"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "decided_at",
+              "displayName": "decided_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "agent_id",
+              "displayName": "agent_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action",
+              "displayName": "action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "target",
+              "displayName": "target",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "classification",
+              "displayName": "classification",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "downstream_count",
+              "displayName": "downstream_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "decision",
+              "displayName": "decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "risk_score",
+              "displayName": "risk_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reasons",
+              "displayName": "reasons",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -5712,
+        -48
+      ],
+      "id": "b6365bed-6e21-42fe-9315-a2d38d5d3c0e",
+      "name": "Insert rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "8MMO9Puj7bifQjbr",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Build one clean audit row per decision — only the columns that exist in raw.governance_audit.\nconst d = $input.item.json;\nconst dh = d.datahub_context || {};\n\nreturn {\n  json: {\n    agent_id:         d.agent_id ?? null,\n    user_id:          d.user_id ?? null,\n    action:           d.action ?? null,\n    target:           dh.dataset ?? null,\n    classification:   dh.classification ?? null,\n    downstream_count: String(dh.downstream_count ?? ''),\n    decision:         d.decision ?? null,\n    risk_score:       String(d.risk_score ?? ''),\n    reasons:          JSON.stringify(d.reasons ?? [])\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5936,
+        -48
+      ],
+      "id": "af31395b-1c24-4807-8553-0dfa408fad33",
+      "name": "Shape Audit Row"
+    },
+    {
+      "parameters": {
+        "content": "### DataHub Enrichment (via MCP)\n\nReads DataHub through the open-source **mcp-server-datahub**\n(no direct GraphQL). Calls the FastAPI bridge at\n`host.docker.internal:8010/mcp/enrich`, which invokes:\n\n- `search` — resolve table name to dataset URN\n- `get_entities` — tags, glossary terms, owners\n- `get_lineage` — downstream blast radius (destructive actions only)\n\n**Outputs `datahub_context`:**\n| field | meaning |\n|---|---|\n| resolved | metadata found in catalogue |\n| dataset / platform | table name, snowflake or postgres |\n| action | delete / export / deploy / read |\n| classification | PII, Confidential, Internal, Public |\n| tags | GDPR, PCI, Financial, etc. |\n| owner | steward from DataHub ownership |\n| downstream_count | tables that break if this is deleted |\n| mcp_tools_used | audit trail of MCP calls |\n\nLLM extracts facts. Deterministic code decides.",
+        "height": 416,
+        "width": 384
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -8912,
+        -208
+      ],
+      "typeVersion": 1,
+      "id": "c01c4a5d-7541-46d5-8c2b-09c79f585bec",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "### Decision Engine\n**This is where the answer is decided.**\nEvery step before this one just collects information.\nThis step is the only one that says yes or no.\n**No AI is used here, on purpose.**\nAn AI can be tricked by clever wording. So the AI is only\nallowed to look and report what it sees. It is never allowed\nto choose. The choosing is done by simple rules that always\nwork the same way. Ask the same question twice, get the same\nanswer twice. And you can always show someone exactly which\nrule made the choice.\n\n**How it chooses:**\nFour helpers check the request at the same time. Each one\nlooks for a different kind of problem. If even one helper\nsays \"this is not okay\", the answer is no. Three happy\nhelpers cannot cancel out one worried helper. The most\ncareful one always wins.\n\n**What it gives back:**\n\n| name | what it means |\n|---|---|\n| decision | `approve` = go ahead. `deny` = stop. `human_review` = wait, ask a person first |\n| risk_score | a number from 0 to 100. Bigger number = more dangerous |\n| risk_tier | the same thing in words: low, medium or high |\n| checks | which helpers were happy. `false` means that helper was worried |\n| datahub_context | the facts about the table, kept here so we can always look back and see the reason for the answer |\n\n**Why the facts matter:**\n\"Delete this table\" sounds the same every single time.\nBut deleting a table of people's names and addresses is very\ndifferent from deleting a table of product prices. And if\nother tables are built on top of it, they all break too.\nThe only way to know the difference is to look it up first.\nThat is what DataHub is for.",
+        "height": 336,
+        "width": 384
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -6336,
+        -784
+      ],
+      "typeVersion": 1,
+      "id": "6185277b-adfe-4ee2-81a2-f024eee38c83",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## I'm a note \n### Policy Retrieval\n\n**This step goes and finds the relevant rules.**\n\nThe gateway does not keep the law in its head. It keeps a\nsearchable library of regulation — EU AI Act, GDPR, UK\nguidance — chopped into small passages.\n\n**It searches two different ways at once.**\n\nThe first way looks for *meaning*. Every passage is turned\ninto numbers that capture what it is about. So a request\nabout \"removing customer records\" can find a rule about\n\"erasure of personal data\", even though they share no words.\n\nThe second way looks for *exact words*. This matters because\nlegal text is full of precise labels like \"Article 5(1)(c)\".\nMeaning-based search blurs those together — Article 5 and\nArticle 6 look almost identical to it. Word matching does not\nblur. It finds the exact one.\n\n**Then it combines the two lists.**\nA passage that both ways agree on rises to the top. A passage\nonly one way found still gets a place, because it might be the\nthing the other way missed.\n\n**What comes back:** a handful of real regulation passages,\neach with its source and article number, and a note saying\nwhich method found it. The next step reasons using these\ninstead of relying on whatever the AI happens to remember.",
+        "height": 288,
+        "width": 544
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -7920,
+        -144
+      ],
+      "typeVersion": 1,
+      "id": "eab9e6b5-0e7a-4e35-b1ea-773361638fa9",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "### Audit Log\n\n**This is the permanent record.**\n\nEvery time the gateway makes a decision, one line is written\nto a database. Nothing is ever changed or deleted afterwards.\n\nWhy bother? Because if someone asks six months from now\n\"why did the AI refuse to do that?\" — the answer has to\nstill exist. A decision nobody can explain later is not\nreally governance.\n\n**What each line saves:**\n\n| column | in plain words |\n|---|---|\n| id | a counter, so every line has its own number |\n| decided_at | the exact date and time this was decided |\n| agent_id | which AI was asking |\n| user_id | who the AI was working for |\n| action | what it wanted to do — delete, export, deploy |\n| target | which table it wanted to do it to |\n| classification | how sensitive that table is (PII, Public...) |\n| downstream_count | how many other tables would break |\n| decision | what we said: approve, deny, or ask a person |\n| risk_score | how dangerous it was, 0 to 100 |\n| reasons | the full list of why — every rule that objected |\n\n**The important columns are the last four.** The others say\n*what happened*. Those say *why* — and that is the part an\nauditor actually asks for.",
+        "height": 240,
+        "width": 272
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -5568,
+        16
+      ],
+      "typeVersion": 1,
+      "id": "f047156f-3892-4f7d-a904-f1ddae3255c7",
+      "name": "Sticky Note3"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Governance Request": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "DataHub Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent Analysis": {
+      "main": [
+        [
+          {
+            "node": "Parse Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Intent": {
+      "main": [
+        [
+          {
+            "node": "Risk Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Risk Classification": {
+      "main": [
+        [
+          {
+            "node": "Policy Retrieval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Policy Retrieval": {
+      "main": [
+        [
+          {
+            "node": "Prep Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Policy": {
+      "main": [
+        [
+          {
+            "node": "Compliance Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compliance Check": {
+      "main": [
+        [
+          {
+            "node": "Parse Compliance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Compliance": {
+      "main": [
+        [
+          {
+            "node": "Security Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Security Check": {
+      "main": [
+        [
+          {
+            "node": "Privacy Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Privacy Check": {
+      "main": [
+        [
+          {
+            "node": "Permission Verification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Permission Verification": {
+      "main": [
+        [
+          {
+            "node": "Decision Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision Engine": {
+      "main": [
+        [
+          {
+            "node": "Route Decision",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Shape Audit Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Decision": {
+      "main": [
+        [
+          {
+            "node": "Approve",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Deny",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Human Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approve": {
+      "main": [
+        [
+          {
+            "node": "Explanation Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deny": {
+      "main": [
+        [
+          {
+            "node": "Explanation Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Human Review": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explanation Generator": {
+      "main": [
+        [
+          {
+            "node": "Parse Explanation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Explanation": {
+      "main": [
+        [
+          {
+            "node": "Audit Logger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Logger": {
+      "main": [
+        [
+          {
+            "node": "Generate Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Report": {
+      "main": [
+        [
+          {
+            "node": "Fetch Report File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Report File": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Explanation Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DataHub Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Call 'policy_classification'",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Intent Analysis",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Call 'policy_lineage'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call 'policy_classification'": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call 'policy_lineage'": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Policy Aggregator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Test Scenarios": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Test Scenarios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Audit Row": {
+      "main": [
+        [
+          {
+            "node": "Insert rows in a table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "5e4dfd9f-a693-4740-94d0-badbaeb3102e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "247a5d09ac5462b7f6041f9bc15cb02b0cdecaa8cebbc241a44b5a08a7d6426e"
+  },
+  "nodeGroups": [],
+  "id": "NM2vqMmlz2uQI9Mh",
+  "tags": []
+}
