@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from .config import settings
 from .deterministic import checks
 from .kb import retrieve
+from .kb import hybrid
 from contextlib import asynccontextmanager
 
 from .datahub_mcp import client as datahub_mcp_client
@@ -39,6 +40,7 @@ class SearchRequest(BaseModel):
     query: str
     k: int = 4
     frameworks: list[str] | None = None
+    mode: str = "hybrid"
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -56,7 +58,12 @@ def run_checks(req: CheckRequest):
     }
 @app.post("/kb/search")
 def kb_search(req: SearchRequest):
-    return retrieve.search(req.query, req.k, req.frameworks)
+    return hybrid.search(req.query, req.k, req.frameworks, req.mode)
+
+
+@app.get("/kb/index")
+def kb_index():
+    return hybrid.index_status()
 from typing import Any
 from . import db
 class AuditRecord(BaseModel):
