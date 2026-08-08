@@ -187,3 +187,68 @@ This is a **working prototype**, and its boundaries are deliberate rather than a
 **Kalpana Joyce Dovari** — MSc Artificial Intelligence, Northumbria University London.
 
 *The core thesis — that AI actions should be governed by the real business context of the data they touch, with the LLM supplying facts and deterministic code making auditable decisions — is working end to end across two data domains.*
+
+## How it works
+
+The gateway sits in front of an AI agent. Before any action runs, the request
+is intercepted, enriched with catalogue metadata, checked against regulation,
+and returned as approve, deny, or human_review with a full audit trail.
+
+![Governance workflow](docs/images/workflow-overview.png)
+
+### DataHub via the MCP server
+
+All catalogue metadata is read through the open-source
+[mcp-server-datahub](https://github.com/acryldata/mcp-server-datahub) rather
+than direct GraphQL. Three tools are used per request:
+
+| Tool | Purpose |
+|---|---|
+| `search` | Resolve a table name to its dataset URN |
+| `get_entities` | Governance tags, glossary terms, ownership |
+| `get_lineage` | Downstream blast radius, for destructive actions only |
+
+![MCP tools available](docs/images/mcp-tools.png)
+
+Every verdict records which MCP tools were called, so the audit trail shows
+not just what was decided but where the facts came from.
+
+![Enrichment output](docs/images/enrichment-output.png)
+
+### Does catalogue context actually change the outcome?
+
+The same request was sent to two arms of the identical pipeline. The only
+difference is whether the gateway could look the table up in DataHub.
+
+Request: **delete the `raw_products` table** - public product data, no
+personal information.
+
+| | Verdict | Risk score | Compliance check |
+|---|---|---|---|
+| **With catalogue (via MCP)** | `human_review` | 55 | passed |
+| **Without catalogue** | `deny` | 55 | failed |
+
+![Verdict comparison](docs/images/comparison-verdicts.png)
+
+Identical input, identical risk score, opposite verdict. Without catalogue
+context the gateway denied the request by invoking GDPR Articles 25, 5(1)(c),
+5(1)(e) and 22, provisions that govern personal data the table does not
+contain. It was not being cautious, it was guessing, and guessing
+conservatively.
+
+Catalogue context does not only catch dangerous actions. It prevents false
+positives on safe ones, which is what keeps a governance layer usable enough
+that teams do not route around it.
+
+### Policy retrieval
+
+Regulation passages are retrieved from a Qdrant knowledge base using two
+independent arms fused with Reciprocal Rank Fusion: dense semantic search
+(`bge-small-en-v1.5`) for meaning, and BM25 keyword scoring for exact legal
+references such as "Article 5(1)(c)" that embeddings tend to blur together.
+
+### Design principle
+
+The language model extracts facts. Deterministic code makes decisions. A model
+can be talked into things, a fixed rule cannot, and it can be explained to an
+auditor line by line.
